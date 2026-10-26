@@ -1,5 +1,6 @@
 //! Implementation of  [`ProcessControlBlock`]
 
+// AI-assisted implementation; references: official rCore-Tutorial-Guide chapters 3–8.
 use super::id::RecycleAllocator;
 use super::manager::insert_into_pid2process;
 use super::TaskControlBlock;
@@ -25,6 +26,8 @@ pub struct ProcessControlBlock {
 
 /// Inner of Process Control Block
 pub struct ProcessControlBlockInner {
+    /// Per-process optional mutex and semaphore deadlock detector.
+    pub deadlock: crate::sync::DeadlockState,
     /// is zombie?
     pub is_zombie: bool,
     /// memory set(address space)
@@ -101,6 +104,7 @@ impl ProcessControlBlock {
             inner: unsafe {
                 UPSafeCell::new(ProcessControlBlockInner {
                     is_zombie: false,
+                    deadlock: crate::sync::DeadlockState::default(),
                     memory_set,
                     parent: None,
                     children: Vec::new(),
@@ -234,6 +238,7 @@ impl ProcessControlBlock {
             inner: unsafe {
                 UPSafeCell::new(ProcessControlBlockInner {
                     is_zombie: false,
+                    deadlock: crate::sync::DeadlockState::default(),
                     memory_set,
                     parent: Some(Arc::downgrade(self)),
                     children: Vec::new(),

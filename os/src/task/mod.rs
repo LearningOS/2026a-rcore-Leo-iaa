@@ -9,6 +9,7 @@
 //! Be careful when you see [`__switch`]. Control flow around this function
 //! might not be what you expect.
 
+// AI-assisted implementation; references: official rCore-Tutorial-Guide chapters 3–8.
 mod context;
 mod id;
 mod manager;
@@ -87,6 +88,11 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     // here we do not remove the thread since we are still using the kstack
     // it will be deallocated when sys_waittid is called
     drop(task_inner);
+    {
+        let mut inner = process.inner_exclusive_access();
+        inner.deadlock.mutexes.remove_thread(tid);
+        inner.deadlock.semaphores.remove_thread(tid);
+    }
 
     // Move the task to stop-wait status, to avoid kernel stack from being freed
     if tid == 0 {

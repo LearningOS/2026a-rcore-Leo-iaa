@@ -1,3 +1,4 @@
+// AI-assisted implementation; references: official rCore-Tutorial-Guide chapters 3–8.
 use crate::{
     fs::{open_file, OpenFlags},
     mm::{translated_ref, translated_refmut, translated_str},
@@ -151,34 +152,44 @@ pub fn sys_kill(pid: usize, signal: u32) -> isize {
 /// YOUR JOB: get time with second and microsecond
 /// HINT: You might reimplement it with virtual memory management.
 /// HINT: What if [`TimeVal`] is splitted by two pages ?
-pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_get_time NOT IMPLEMENTED",
-        current_task().unwrap().process.upgrade().unwrap().getpid()
-    );
-    -1
+pub fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
+    let us = crate::timer::get_time_us();
+    let time = TimeVal {
+        sec: us / 1_000_000,
+        usec: us % 1_000_000,
+    };
+    let bytes = unsafe {
+        core::slice::from_raw_parts(
+            &time as *const TimeVal as *const u8,
+            core::mem::size_of::<TimeVal>(),
+        )
+    };
+    if crate::mm::copy_to_user(crate::task::current_user_token(), ts as usize, bytes) {
+        0
+    } else {
+        -1
+    }
 }
 
 /// mmap syscall
 ///
 /// YOUR JOB: Implement mmap.
-pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_mmap NOT IMPLEMENTED",
-        current_task().unwrap().process.upgrade().unwrap().getpid()
-    );
-    -1
+pub fn sys_mmap(start: usize, len: usize, prot: usize) -> isize {
+    let task = current_process();
+    let result = task
+        .inner_exclusive_access()
+        .memory_set
+        .mmap(start, len, prot);
+    result
 }
 
 /// munmap syscall
 ///
 /// YOUR JOB: Implement munmap.
-pub fn sys_munmap(_start: usize, _len: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_munmap NOT IMPLEMENTED",
-        current_task().unwrap().process.upgrade().unwrap().getpid()
-    );
-    -1
+pub fn sys_munmap(start: usize, len: usize) -> isize {
+    let task = current_process();
+    let result = task.inner_exclusive_access().memory_set.munmap(start, len);
+    result
 }
 
 /// change data segment size
