@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "courseId": 2073,
+  "repository": "LearningOS/2026a-rcore-Leo-iaa",
+  "user": "Leo-iaa",
+  "totalScore": 500,
+  "chapters": {
+    "ch4": {
+      "points": "16/16",
+      "score": 100,
+      "commit": "761bd8f340d334f22b8efad500f92fb00e233b71"
+    }
+  },
+  "score": 100,
+  "upload": {
+    "status": "pending",
+    "runId": "40252422092",
+    "runAttempt": "1"
+  }
+}
