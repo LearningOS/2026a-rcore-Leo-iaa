@@ -1,5 +1,6 @@
 //! Implementation of [`MapArea`] and [`MemorySet`].
 
+// AI-assisted implementation; references: official rCore-Tutorial-Guide chapters 3–8.
 use super::{frame_alloc, FrameTracker};
 use super::{PTEFlags, PageTable, PageTableEntry};
 use super::{PhysAddr, PhysPageNum, VirtAddr, VirtPageNum};
@@ -40,6 +41,106 @@ pub struct MemorySet {
 }
 
 impl MemorySet {
+    /// Create an anonymous user mapping after validating every target page.
+    pub fn mmap(&mut self, start: usize, len: usize, prot: usize) -> isize {
+        if start % PAGE_SIZE != 0 || prot == 0 || prot & !7 != 0 {
+            return -1;
+        }
+        let end = match start
+            .checked_add(len)
+            .and_then(|end| end.checked_add(PAGE_SIZE - 1))
+        {
+            Some(end) if end <= (1usize << 38) => end & !(PAGE_SIZE - 1),
+            _ => return -1,
+        };
+        if len == 0 {
+            return 0;
+        }
+        let first = VirtAddr::from(start).floor();
+        let last = VirtAddr::from(end).floor();
+        if (first.0..last.0).any(|vpn| {
+            self.translate(vpn.into())
+                .map_or(false, |pte| pte.is_valid())
+        }) {
+            return -1;
+        }
+        let permission = MapPermission::from_bits((prot as u8) << 1).unwrap() | MapPermission::U;
+        // Reserve data frames before publishing the mapping; OOM leaves it unchanged.
+        let mut area = MapArea::new(start.into(), end.into(), MapType::Framed, permission);
+        for vpn in area.vpn_range {
+            let frame = match frame_alloc() {
+                Some(frame) => frame,
+                None => return -1,
+            };
+            area.data_frames.insert(vpn, frame);
+        }
+        for (vpn, frame) in area.data_frames.iter() {
+            self.page_table.map(
+                *vpn,
+                frame.ppn,
+                PTEFlags::from_bits(permission.bits).unwrap(),
+            );
+        }
+        self.areas.push(area);
+        0
+    }
+
+    /// Remove a mapped interval, preserving both sides of partially removed areas.
+    pub fn munmap(&mut self, start: usize, len: usize) -> isize {
+        if start % PAGE_SIZE != 0 {
+            return -1;
+        }
+        let end = match start
+            .checked_add(len)
+            .and_then(|end| end.checked_add(PAGE_SIZE - 1))
+        {
+            Some(end) if end <= (1usize << 38) => end & !(PAGE_SIZE - 1),
+            _ => return -1,
+        };
+        if len == 0 {
+            return 0;
+        }
+        let first = VirtAddr::from(start).floor();
+        let last = VirtAddr::from(end).floor();
+        if (first.0..last.0).any(|vpn| {
+            self.translate(vpn.into()).map_or(true, |pte| {
+                !pte.is_valid() || !pte.flags().contains(PTEFlags::U)
+            })
+        }) {
+            return -1;
+        }
+        for mut area in core::mem::take(&mut self.areas) {
+            let a = area.vpn_range.get_start();
+            let b = area.vpn_range.get_end();
+            let lo = a.max(first);
+            let hi = b.min(last);
+            if lo >= hi {
+                self.areas.push(area);
+                continue;
+            }
+            for vpn in VPNRange::new(lo, hi) {
+                area.unmap_one(&mut self.page_table, vpn);
+            }
+            if a < lo {
+                if hi < b {
+                    let right = MapArea {
+                        vpn_range: VPNRange::new(hi, b),
+                        data_frames: area.data_frames.split_off(&hi),
+                        map_type: area.map_type,
+                        map_perm: area.map_perm,
+                    };
+                    self.areas.push(right);
+                }
+                area.vpn_range = VPNRange::new(a, lo);
+                self.areas.push(area);
+            } else if hi < b {
+                area.vpn_range = VPNRange::new(hi, b);
+                self.areas.push(area);
+            }
+        }
+        0
+    }
+
     /// Create a new empty `MemorySet`.
     pub fn new_bare() -> Self {
         Self {

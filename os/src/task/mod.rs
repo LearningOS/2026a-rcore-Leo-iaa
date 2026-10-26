@@ -9,6 +9,7 @@
 //! Be careful when you see `__switch` ASM function in `switch.S`. Control flow around this function
 //! might not be what you expect.
 
+// AI-assisted implementation; references: official rCore-Tutorial-Guide chapters 3–8.
 mod context;
 mod switch;
 #[allow(clippy::module_inception)]
@@ -17,6 +18,7 @@ mod task;
 use crate::loader::{get_app_data, get_num_app};
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use lazy_static::*;
 use switch::__switch;
@@ -46,6 +48,7 @@ struct TaskManagerInner {
     tasks: Vec<TaskControlBlock>,
     /// id of current `Running` task
     current_task: usize,
+    syscall_counts: Vec<BTreeMap<usize, usize>>,
 }
 
 lazy_static! {
@@ -64,6 +67,7 @@ lazy_static! {
                 UPSafeCell::new(TaskManagerInner {
                     tasks,
                     current_task: 0,
+                    syscall_counts: (0..num_app).map(|_| BTreeMap::new()).collect(),
                 })
             },
         }
@@ -201,4 +205,27 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 /// Change the current 'Running' task's program break
 pub fn change_program_brk(size: i32) -> Option<usize> {
     TASK_MANAGER.change_current_program_brk(size)
+}
+
+/// Count this invocation before dispatch, including trace itself.
+pub fn record_syscall(id: usize) {
+    let mut inner = TASK_MANAGER.inner.exclusive_access();
+    let current = inner.current_task;
+    *inner.syscall_counts[current].entry(id).or_insert(0) += 1;
+}
+
+/// Return only the running task's own syscall history.
+pub fn syscall_count(id: usize) -> usize {
+    let inner = TASK_MANAGER.inner.exclusive_access();
+    inner.syscall_counts[inner.current_task]
+        .get(&id)
+        .copied()
+        .unwrap_or(0)
+}
+
+/// Apply a memory-space operation to the current task without leaking the borrow.
+pub fn with_current_memory<F: FnOnce(&mut crate::mm::MemorySet) -> isize>(f: F) -> isize {
+    let mut inner = TASK_MANAGER.inner.exclusive_access();
+    let current = inner.current_task;
+    f(&mut inner.tasks[current].memory_set)
 }
