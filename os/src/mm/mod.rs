@@ -5,6 +5,7 @@
 //! map area and memory set, is implemented here.
 //!
 //! Every task or process has a memory_set to control its virtual memory.
+// AI-assisted implementation; references: official rCore-Tutorial-Guide chapters 3–8.
 mod address;
 mod frame_allocator;
 mod heap_allocator;
@@ -24,3 +25,6 @@ pub fn init() {
     frame_allocator::init_frame_allocator();
     KERNEL_SPACE.exclusive_access().activate();
 }
+
+mod user_access;
+pub use user_access::{copy_to_user, read_user_byte, user_buffer_valid};
