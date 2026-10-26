@@ -52,7 +52,7 @@ impl Inode {
                 disk_inode.read_at(DIRENT_SZ * i, dirent.as_bytes_mut(), &self.block_device,),
                 DIRENT_SZ,
             );
-            if dirent.name() == name {
+            if !dirent.name().is_empty() && dirent.name() == name {
                 return Some(dirent.inode_id() as u32);
             }
         }
@@ -92,6 +92,9 @@ impl Inode {
     }
     /// Create inode under current inode by name
     pub fn create(&self, name: &str) -> Option<Arc<Inode>> {
+        if name.is_empty() || name.len() > 27 || name.contains('/') {
+            return None;
+        }
         let mut fs = self.fs.lock();
         let op = |root_inode: &DiskInode| {
             // assert it is a directory
@@ -150,7 +153,9 @@ impl Inode {
                     disk_inode.read_at(i * DIRENT_SZ, dirent.as_bytes_mut(), &self.block_device,),
                     DIRENT_SZ,
                 );
-                v.push(String::from(dirent.name()));
+                if !dirent.name().is_empty() {
+                    v.push(String::from(dirent.name()));
+                }
             }
             v
         })
@@ -182,5 +187,161 @@ impl Inode {
             }
         });
         block_cache_sync_all();
+    }
+}
+
+// References: official Guide chapter 6, easy-fs VFS and inode bitmap interfaces.
+// Design and implementation assisted by Codex; no other student's solution was used.
+impl Inode {
+    fn inode_id_locked(&self, fs: &EasyFileSystem) -> u32 {
+        let (first, _) = fs.get_disk_inode_pos(0);
+        (((self.block_id - first as usize) * super::BLOCK_SZ + self.block_offset)
+            / core::mem::size_of::<DiskInode>()) as u32
+    }
+
+    fn root_links_locked(&self, fs: &EasyFileSystem, inode_id: u32) -> u32 {
+        let (block, offset) = fs.get_disk_inode_pos(0);
+        get_block_cache(block as usize, self.block_device.clone())
+            .lock()
+            .read(offset, |root: &DiskInode| {
+                let mut count = 0;
+                for i in 0..root.size as usize / DIRENT_SZ {
+                    let mut entry = DirEntry::empty();
+                    root.read_at(i * DIRENT_SZ, entry.as_bytes_mut(), &self.block_device);
+                    if !entry.name().is_empty() && entry.inode_id() == inode_id {
+                        count += 1;
+                    }
+                }
+                count
+            })
+    }
+
+    fn reclaim_locked(&self, fs: &mut EasyFileSystem, inode_id: u32) {
+        assert_ne!(inode_id, 0);
+        let (block, offset) = fs.get_disk_inode_pos(inode_id);
+        let blocks = get_block_cache(block as usize, self.block_device.clone())
+            .lock()
+            .modify(offset, |inode: &mut DiskInode| {
+                inode.clear_size(&self.block_device)
+            });
+        for block in blocks {
+            fs.dealloc_data(block);
+        }
+        fs.inode_bitmap
+            .dealloc(&self.block_device, inode_id as usize);
+    }
+
+    /// Return the stable inode id, file type, and the number of directory links.
+    pub fn metadata(&self) -> (u32, bool, u32) {
+        let fs = self.fs.lock();
+        let id = self.inode_id_locked(&fs);
+        let is_dir = self.read_disk_inode(|inode| inode.is_dir());
+        let links = if id == 0 {
+            1
+        } else {
+            self.root_links_locked(&fs, id)
+        };
+        (id, is_dir, links)
+    }
+
+    /// Keep an unlinked file alive until its last open-file description closes.
+    pub fn open_handle(&self) {
+        let mut fs = self.fs.lock();
+        let id = self.inode_id_locked(&fs);
+        *fs.open_counts.entry(id).or_insert(0) += 1;
+    }
+
+    /// Release one open-file description and reclaim an orphan on the last close.
+    pub fn close_handle(&self) {
+        let mut fs = self.fs.lock();
+        let id = self.inode_id_locked(&fs);
+        if let Some(count) = fs.open_counts.get_mut(&id) {
+            *count -= 1;
+            if *count == 0 {
+                fs.open_counts.remove(&id);
+                if id != 0 && self.root_links_locked(&fs, id) == 0 {
+                    self.reclaim_locked(&mut fs, id);
+                }
+            }
+        }
+        block_cache_sync_all();
+    }
+
+    /// Add a directory entry referring to the original file's inode.
+    pub fn link(&self, old_name: &str, new_name: &str) -> bool {
+        if old_name == new_name
+            || new_name.is_empty()
+            || new_name.len() > 27
+            || new_name.contains('/')
+        {
+            return false;
+        }
+        let mut fs = self.fs.lock();
+        let inode_id = match self.read_disk_inode(|root| {
+            if self.find_inode_id(new_name, root).is_some() {
+                None
+            } else {
+                self.find_inode_id(old_name, root)
+            }
+        }) {
+            Some(id) => id,
+            None => return false,
+        };
+        self.modify_disk_inode(|root| {
+            let mut slot = root.size as usize / DIRENT_SZ;
+            for i in 0..slot {
+                let mut entry = DirEntry::empty();
+                root.read_at(i * DIRENT_SZ, entry.as_bytes_mut(), &self.block_device);
+                if entry.name().is_empty() {
+                    slot = i;
+                    break;
+                }
+            }
+            if slot * DIRENT_SZ == root.size as usize {
+                self.increase_size(((slot + 1) * DIRENT_SZ) as u32, root, &mut fs);
+            }
+            root.write_at(
+                slot * DIRENT_SZ,
+                DirEntry::new(new_name, inode_id).as_bytes(),
+                &self.block_device,
+            );
+        });
+        block_cache_sync_all();
+        true
+    }
+
+    /// Remove one name; free data and inode only after the last link and open handle.
+    pub fn unlink(&self, name: &str) -> bool {
+        if name.is_empty() {
+            return false;
+        }
+        let mut fs = self.fs.lock();
+        let removed = self.modify_disk_inode(|root| {
+            for i in 0..root.size as usize / DIRENT_SZ {
+                let mut entry = DirEntry::empty();
+                root.read_at(i * DIRENT_SZ, entry.as_bytes_mut(), &self.block_device);
+                if entry.name() == name {
+                    let id = entry.inode_id();
+                    root.write_at(
+                        i * DIRENT_SZ,
+                        DirEntry::empty().as_bytes(),
+                        &self.block_device,
+                    );
+                    return Some(id);
+                }
+            }
+            None
+        });
+        let id = match removed {
+            Some(id) => id,
+            None => return false,
+        };
+        if self.root_links_locked(&fs, id) == 0
+            && fs.open_counts.get(&id).copied().unwrap_or(0) == 0
+        {
+            self.reclaim_locked(&mut fs, id);
+        }
+        block_cache_sync_all();
+        true
     }
 }

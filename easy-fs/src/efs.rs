@@ -7,6 +7,8 @@ use alloc::sync::Arc;
 use spin::Mutex;
 ///An easy file system on block
 pub struct EasyFileSystem {
+    /// Number of live open-file descriptions, keyed by on-disk inode id.
+    pub(crate) open_counts: alloc::collections::BTreeMap<u32, usize>,
     ///Real device
     pub block_device: Arc<dyn BlockDevice>,
     ///Inode bitmap
@@ -40,6 +42,7 @@ impl EasyFileSystem {
             data_bitmap_blocks as usize,
         );
         let mut efs = Self {
+            open_counts: alloc::collections::BTreeMap::new(),
             block_device: Arc::clone(&block_device),
             inode_bitmap,
             data_bitmap,
@@ -91,6 +94,7 @@ impl EasyFileSystem {
                 let inode_total_blocks =
                     super_block.inode_bitmap_blocks + super_block.inode_area_blocks;
                 let efs = Self {
+                    open_counts: alloc::collections::BTreeMap::new(),
                     block_device,
                     inode_bitmap: Bitmap::new(1, super_block.inode_bitmap_blocks as usize),
                     data_bitmap: Bitmap::new(

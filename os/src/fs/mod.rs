@@ -1,5 +1,6 @@
 //! File trait & inode(dir, file, pipe, stdin, stdout)
 
+// AI-assisted implementation; references: official rCore-Tutorial-Guide chapters 3–8.
 mod inode;
 mod stdio;
 
@@ -7,6 +8,10 @@ use crate::mm::UserBuffer;
 
 /// trait File for all file types
 pub trait File: Send + Sync {
+    /// Query metadata when the descriptor refers to a disk inode.
+    fn stat(&self) -> Option<Stat> {
+        None
+    }
     /// the file readable?
     fn readable(&self) -> bool;
     /// the file writable?
@@ -46,5 +51,5 @@ bitflags! {
     }
 }
 
-pub use inode::{list_apps, open_file, OSInode, OpenFlags};
+pub use inode::{list_apps, open_file, OSInode, OpenFlags, ROOT_INODE};
 pub use stdio::{Stdin, Stdout};

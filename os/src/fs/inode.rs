@@ -4,6 +4,7 @@
 //!
 //! `UPSafeCell<OSInodeInner>` -> `OSInode`: for static `ROOT_INODE`,we
 //! need to wrap `OSInodeInner` into `UPSafeCell`
+// AI-assisted implementation; references: official rCore-Tutorial-Guide chapters 3–8.
 use super::File;
 use crate::drivers::BLOCK_DEVICE;
 use crate::mm::UserBuffer;
@@ -31,6 +32,7 @@ pub struct OSInodeInner {
 impl OSInode {
     /// create a new inode in memory
     pub fn new(readable: bool, writable: bool, inode: Arc<Inode>) -> Self {
+        inode.open_handle();
         Self {
             readable,
             writable,
@@ -56,6 +58,7 @@ impl OSInode {
 }
 
 lazy_static! {
+    /// Root directory shared by namespace operations and regular file opens.
     pub static ref ROOT_INODE: Arc<Inode> = {
         let efs = EasyFileSystem::open(BLOCK_DEVICE.clone());
         Arc::new(EasyFileSystem::root_inode(&efs))
@@ -125,7 +128,28 @@ pub fn open_file(name: &str, flags: OpenFlags) -> Option<Arc<OSInode>> {
     }
 }
 
+impl Drop for OSInode {
+    fn drop(&mut self) {
+        self.inner.exclusive_access().inode.close_handle();
+    }
+}
+
 impl File for OSInode {
+    fn stat(&self) -> Option<super::Stat> {
+        let (id, directory, nlink) = self.inner.exclusive_access().inode.metadata();
+        Some(super::Stat {
+            dev: 0,
+            ino: id as u64,
+            mode: if directory {
+                super::StatMode::DIR
+            } else {
+                super::StatMode::FILE
+            },
+            nlink,
+            pad: [0; 7],
+        })
+    }
+
     fn readable(&self) -> bool {
         self.readable
     }

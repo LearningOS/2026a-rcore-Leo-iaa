@@ -1,4 +1,5 @@
 //! Implementation of [`PageTableEntry`] and [`PageTable`].
+// AI-assisted implementation; references: official rCore-Tutorial-Guide chapters 3–8.
 use super::{frame_alloc, FrameTracker, PhysAddr, PhysPageNum, StepByOne, VirtAddr, VirtPageNum};
 use alloc::string::String;
 use alloc::vec;
@@ -141,7 +142,9 @@ impl PageTable {
     }
     /// get the page table entry from the virtual page number
     pub fn translate(&self, vpn: VirtPageNum) -> Option<PageTableEntry> {
-        self.find_pte(vpn).map(|pte| *pte)
+        self.find_pte(vpn)
+            .filter(|pte| pte.is_valid())
+            .map(|pte| *pte)
     }
     /// get the physical address from the virtual address
     pub fn translate_va(&self, va: VirtAddr) -> Option<PhysAddr> {

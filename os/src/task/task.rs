@@ -1,4 +1,5 @@
 //! Types related to task management & Functions for completely changing TCB
+// AI-assisted implementation; references: official rCore-Tutorial-Guide chapters 3–8.
 use super::TaskContext;
 use super::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
 use crate::config::TRAP_CONTEXT_BASE;
@@ -39,6 +40,10 @@ impl TaskControlBlock {
 }
 
 pub struct TaskControlBlockInner {
+    /// Scheduling priority, initialized independently for each new process.
+    pub priority: usize,
+    /// Accumulated stride, using a wide integer to avoid practical overflow.
+    pub stride: u128,
     /// The physical page number of the frame where the trap context is placed
     pub trap_cx_ppn: PhysPageNum,
 
@@ -121,6 +126,8 @@ impl TaskControlBlock {
                     base_size: user_sp,
                     task_cx: TaskContext::goto_trap_return(kernel_stack_top),
                     task_status: TaskStatus::Ready,
+                    priority: 16,
+                    stride: 0,
                     memory_set,
                     parent: None,
                     children: Vec::new(),
@@ -209,6 +216,8 @@ impl TaskControlBlock {
                     base_size: parent_inner.base_size,
                     task_cx: TaskContext::goto_trap_return(kernel_stack_top),
                     task_status: TaskStatus::Ready,
+                    priority: 16,
+                    stride: 0,
                     memory_set,
                     parent: Some(Arc::downgrade(self)),
                     children: Vec::new(),
